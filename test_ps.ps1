@@ -1,11 +1,13 @@
 #region Params
-$clientId = "client_id"
+$clientId = "fbfe3e4f-5c80-48e5-8364-01445ab2793a"
 $clientSecret = "secret"
+$tenantId = "6061c477-28c6-488f-91c3-ff587946cc72"
+$userId = "5a51cb9d-26eb-427e-9079-5774a3e8ba25"
+$schemaExtId = "exti51xp4di_licenseInfo"
+$groupId = ""
 #endregion
 
 #region Get Token
-$tenantId = "tenant_id"
-
 $tokenBody = @{
     client_id     = $clientId
     scope         = "https://graph.microsoft.com/.default"
@@ -28,31 +30,36 @@ Write-Host "Token acquired successfully." -ForegroundColor Green
 #endregion
 
 #region Create schema extension
-# $appObjectId = "7b8e00a8-7705-4d0d-be0f-94d626c6bfc8" # object id not client id
-
 # $body = @{
-#     name          = "licenseIds"
-#     dataType      = "String"
-#     targetObjects = @("User")
-# } | ConvertTo-Json
+#     id          = "licenseInfo"                        # Graph will prefix this, e.g. extk9eruy7c_licenseInfo
+#     description = "License assignment info for users"
+#     targetTypes = @("User")
+#     owner       = $clientId                            # appId of the owning app registration
+#     properties  = @(
+#         @{
+#             name = "licenseIds"
+#             type = "String"
+#         }
+#     )
+# } | ConvertTo-Json -Depth 5
 
-# $extension = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/applications/${appObjectId}/extensionProperties" `
+# $schemaExt = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/schemaExtensions" `
 #     -Method Post `
 #     -Headers $headers `
 #     -ContentType "application/json" `
 #     -Body $body
 
-# $extension | ConvertTo-Json -Depth 5
-# # Note the full name returned, e.g. extension_<appIdNoHyphens>_licenseIds
+# $schemaExtId = $schemaExt.id   # e.g. extk9eruy7c_licenseInfo
+# Write-Host "Schema extension created: $schemaExtId" -ForegroundColor Green
+# $schemaExt | ConvertTo-Json -Depth 5
 #endregion
 
-#region Set schema extension on user
-# $userId = "5a51cb9d-26eb-427e-9079-5774a3e8ba25"
-# $extensionName = $extension.name  # e.g. extension_8c5b6a2ce02b47cf9f754aa4883c6480_licenseIds
-
+#region Assign schema extension value to a user
 # $body = @{
-#     $extensionName = "LIC-001,LIC-002,LIC-003"
-# } | ConvertTo-Json
+#     $schemaExtId = @{
+#         licenseIds = "LIC-001;LIC-002;LIC-003"
+#     }
+# } | ConvertTo-Json -Depth 5
 
 # Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/users/${userId}" `
 #     -Method Patch `
@@ -60,16 +67,113 @@ Write-Host "Token acquired successfully." -ForegroundColor Green
 #     -ContentType "application/json" `
 #     -Body $body
 
-# Write-Host "Extension value set on user." -ForegroundColor Green
+# Write-Host "Schema extension value set on user $userId" -ForegroundColor Green
 #endregion
 
-#region Queries
-$ext = "extension_fbfe3e4f5c8048e5836401445ab2793a_licenseIds"
-$select = "id,displayName,$ext"
-
-# Users where the extension is not null
-$uri = "https://graph.microsoft.com/v1.0/users?`$filter=${ext} ne null&`$select=${select}"
+#region Query user with schema extension
+Write-Host "Retrieving user by id."
+$uri = "https://graph.microsoft.com/v1.0/users/${userId}?`$select=id,displayName,${schemaExtId}"
 
 $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
-$response.value | ConvertTo-Json -Depth 5
+$response | ConvertTo-Json -Depth 5
+#endregion
+
+#region Filter users by schema extension value (eq operator)
+Write-Host "Retrieving users by schema extension eq operator."
+$uri = "https://graph.microsoft.com/v1.0/users?`$filter=${schemaExtId}/licenseIds eq 'LIC-001;LIC-002;LIC-003'&`$select=id,displayName,${schemaExtId}"
+
+try {
+    $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+    $response | ConvertTo-Json -Depth 5
+}
+catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    $reader = [System.IO.StreamReader]::new($_.Exception.Response.GetResponseStream())
+    $errorBody = $reader.ReadToEnd()
+    $reader.Close()
+
+    Write-Host "Error $statusCode" -ForegroundColor Red
+    Write-Host $errorBody
+}
+#endregion
+
+#region Filter users by schema extension value (contains operator)
+Write-Host "Retrieving users by schema extension contains operator."
+$uri = "https://graph.microsoft.com/v1.0/users?`$filter=${schemaExtId}/licenseIds contains 'LIC-001'&`$select=id,displayName,${schemaExtId}"
+
+try {
+    $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+    $response | ConvertTo-Json -Depth 5
+}
+catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    $errorBody = $_.ErrorDetails.Message
+
+    Write-Host "Error $statusCode" -ForegroundColor Red
+    Write-Host $errorBody
+}
+#endregion
+
+#region Add user to security group
+Write-Host "Adding user to security group."
+$body = @{
+    "@odata.id" = "https://graph.microsoft.com/v1.0/directoryObjects/${userId}"
+} | ConvertTo-Json
+ 
+try {
+    Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/groups/${groupId}/members/`$ref" `
+        -Method Post `
+        -Headers $headers `
+        -ContentType "application/json" `
+        -Body $body
+ 
+    Write-Host "User $userId added to group $groupId" -ForegroundColor Green
+}
+catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    $errorBody = $_.ErrorDetails.Message
+ 
+    Write-Host "Error $statusCode" -ForegroundColor Red
+    Write-Host $errorBody
+}
+#endregion
+
+#region Remove user from security group
+Write-Host "Removing user from security group."
+try {
+    Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/groups/${groupId}/members/${userId}/`$ref" `
+        -Method Delete `
+        -Headers $headers
+ 
+    Write-Host "User $userId removed from group $groupId" -ForegroundColor Green
+}
+catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    $errorBody = $_.ErrorDetails.Message
+ 
+    Write-Host "Error $statusCode" -ForegroundColor Red
+    Write-Host $errorBody
+}
+#endregion
+
+#region Check if user is member of security group
+Write-Host "Checking if user is member of security group."
+try {
+    $uri = "https://graph.microsoft.com/v1.0/groups/${groupId}/members?`$filter=id eq '${userId}'"
+    $response = Invoke-RestMethod -Uri $uri -Method Get -Headers $headers
+ 
+    if ($response.value.Count -gt 0) {
+        Write-Host "User $userId IS a member of group $groupId" -ForegroundColor Green
+    }
+    else {
+        Write-Host "User $userId is NOT a member of group $groupId" -ForegroundColor Yellow
+    }
+}
+catch {
+    $statusCode = $_.Exception.Response.StatusCode.value__
+    $errorBody = $_.ErrorDetails.Message
+ 
+    Write-Host "Error $statusCode" -ForegroundColor Red
+    Write-Host $errorBody
+}
 #endregion
